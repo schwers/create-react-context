@@ -4,6 +4,7 @@ import PropTypes from 'prop-types';
 import gud from 'gud';
 import warning from 'fbjs/lib/warning';
 
+
 const MAX_SIGNED_31_BIT_INT = 1073741823;
 
 // Inlined Object.is polyfill.
@@ -40,26 +41,44 @@ export type Context<T> = {
   Consumer: Class<Consumer<T>>
 };
 
-function createEventEmitter(value) {
-  let handlers = [];
-  return {
-    on(handler) {
-      handlers.push(handler);
-    },
+function createBroadcast (initialState) {
+  let listeners = {}
+  let id = 1
+  let _state = initialState
 
-    off(handler) {
-      handlers = handlers.filter(h => h !== handler);
-    },
+  function getState () {
+    return _state
+  }
 
-    get() {
-      return value;
-    },
-
-    set(newValue, changedBits) {
-      value = newValue;
-      handlers.forEach(handler => handler(value, changedBits));
+  function setState (state, changedBits) {
+    _state = state
+    const keys = Object.keys(listeners)
+    let i = 0
+    const len = keys.length
+    for (; i < len; i++) {
+      // if a listener gets unsubscribed during setState we just skip it
+      if (listeners[keys[i]]) listeners[keys[i]](state, changedBits)
     }
-  };
+  }
+
+  // subscribe to changes and return the subscriptionId
+  function subscribe (listener) {
+    if (typeof listener !== 'function') {
+      console.error('listener must be a function.')
+      return
+    }
+    const currentId = id
+    listeners[currentId] = listener
+    id += 1
+    return currentId
+  }
+
+  // remove subscription by removing the listener function
+  function unsubscribe (id) {
+    listeners[id] = undefined
+  }
+
+  return { getState, setState, subscribe, unsubscribe }
 }
 
 function onlyChild(children): any {
@@ -73,7 +92,7 @@ function createReactContext<T>(
   const contextProp = '__create-react-context-' + gud() + '__';
 
   class Provider extends Component<ProviderProps<T>> {
-    emitter = createEventEmitter(this.props.value);
+    emitter = createBroadcast(this.props.value);
 
     static childContextTypes = {
       [contextProp]: PropTypes.object.isRequired
@@ -110,7 +129,7 @@ function createReactContext<T>(
           changedBits |= 0;
 
           if (changedBits !== 0) {
-            this.emitter.set(nextProps.value, changedBits);
+            this.emitter.setState(nextProps.value, changedBits);
           }
         }
       }
@@ -127,6 +146,7 @@ function createReactContext<T>(
     };
 
     observedBits: number;
+    unsubscribeId: number;
 
     state: ConsumerState<T> = {
       value: this.getValue()
@@ -142,7 +162,7 @@ function createReactContext<T>(
 
     componentDidMount() {
       if (this.context[contextProp]) {
-        this.context[contextProp].on(this.onUpdate);
+        this.unsubscribeId = this.context[contextProp].subscribe(this.onUpdate);
       }
       let { observedBits } = this.props;
       this.observedBits =
@@ -152,14 +172,14 @@ function createReactContext<T>(
     }
 
     componentWillUnmount() {
-      if (this.context[contextProp]) {
-        this.context[contextProp].off(this.onUpdate);
+      if (this.context[contextProp] && this.unsubscribeId) {
+        this.context[contextProp].unsubscribe(this.unsubscribeId);
       }
     }
 
     getValue(): T {
       if (this.context[contextProp]) {
-        return this.context[contextProp].get();
+        return this.context[contextProp].getState();
       } else {
         return defaultValue;
       }
